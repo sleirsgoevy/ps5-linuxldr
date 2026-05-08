@@ -14,7 +14,7 @@ static void set_ist(int which, uint64_t value)
 static void build_jump_ists(uint64_t* ist_gp, uint64_t* ist_db, uint64_t cr3, uint64_t addr, uint16_t cs, uint64_t rcx, uint64_t rdx)
 {
     void* page_virt;
-    uint64_t page = allocate_physical_memory(&page_virt, 4096, 4096);
+    uint64_t page = allocate_physical_memory(&page_virt, 41 * 8, 16);
     uint64_t page_kern = get_dmap_base() + page;
     uint64_t* p = page_virt;
     //assignments are in execution order

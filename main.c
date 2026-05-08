@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <ps5/kernel.h>
@@ -25,18 +26,19 @@ static inline bool validate_and_relocate_kernel(void** linux, size_t* linux_size
     if(*linux_size < setup_size)
         return false;
     memset((char*)*linux + header_end, 0, setup_size - header_end);
-    //*linux_phys = to_physical_memory_partial(linux, setup_size + bp->init_size, *linux_size, bp->kernel_alignment, -setup_size, true);
+    *linux_phys = to_physical_memory_partial(linux, setup_size + bp->init_size, *linux_size, bp->kernel_alignment, -setup_size, true);
     //we can't do the above because of memory shortage
-    *linux_phys = to_physical_memory(linux, *linux_size, bp->kernel_alignment, -setup_size, true);
+    //*linux_phys = to_physical_memory(linux, *linux_size, bp->kernel_alignment, -setup_size, true);
     return true;
 }
 
-static inline uint64_t prepare_trampoline_params(struct trampoline_params** tp, uint32_t vram_size)
+static inline uint64_t prepare_trampoline_params(struct trampoline_params** tp, uint64_t vram_base, uint64_t vram_size)
 {
     void* p;
-    uint64_t phys = allocate_physical_memory(&p, sizeof(struct trampoline_params), 4096);
+    uint64_t phys = allocate_physical_memory(&p, sizeof(struct trampoline_params), _Alignof(struct trampoline_params));
     struct trampoline_params* q = p;
     q->fw_version = kernel_get_fw_version();
+    q->vram_base = vram_base;
     q->vram_size = vram_size;
     q->kdata_base = KERNEL_ADDRESS_DATA_BASE;
     *tp = q;
@@ -88,12 +90,20 @@ int main(void)
     bp->loadflags = 0;
     bp->hardware_subarch = 5; //X86_SUBARCH_PS5
     bp->acpi_rsdp = get_acpi_rsdp();
+    void* vram_size_s = 0;
+    ssize_t vram_size_size = read_file("vram.txt", &vram_size_s, false);
+    size_t vram_size = 1 << 30;
+    if(vram_size_size > 0)
+        vram_size = atoll(vram_size_s);
+    vram_size = -(-vram_size & -16777216);
     e820_init(bp);
-    e820_set_reserved(bp, 0x100000000, 0x140000000); //vram
+    void* vram_virt;
+    uint64_t vram_base = allocate_physical_memory(&vram_virt, vram_size, 16777216);
+    e820_set_reserved(bp, vram_base, vram_base + vram_size);
     void* trampoline_copy = (void*)trampoline;
     uint64_t trampoline_phys = to_physical_memory(&trampoline_copy, sizeof(trampoline), 4096, 0, false);
     struct trampoline_params* tp;
-    uint64_t tp_phys = prepare_trampoline_params(&tp, 1 << 30);
+    uint64_t tp_phys = prepare_trampoline_params(&tp, vram_base, vram_size);
     uint64_t pagetable_start, pagetable_end;
     setup_krop(trampoline_phys, 0x20, linux_phys, tp_phys, &pagetable_start, &pagetable_end);
     if(!have_hv_exploit())
@@ -106,7 +116,7 @@ int main(void)
         string_append(&cmdline, " disable_mtrr_trim");
     }
     cmdline_f = cmdline;
-    uint64_t cmdline_phys = to_physical_memory(&cmdline_f, strlen(cmdline_f) + 1, 4096, 0, true);
+    uint64_t cmdline_phys = to_physical_memory(&cmdline_f, strlen(cmdline_f) + 1, 1, 0, true);
     bp->cmd_line_ptr = cmdline_phys;
     bp->ext_cmd_line_ptr = cmdline_phys >> 32;
     bp->cmdline_size = strlen(cmdline_f);

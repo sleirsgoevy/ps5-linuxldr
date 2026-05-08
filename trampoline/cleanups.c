@@ -32,7 +32,7 @@ static void setup_vram(void)
 {
     //from ps5-linux-loader
     //using different address as the vram base, though
-    uint64_t vram_start = 0x100000000;
+    uint64_t vram_start = trampoline_params->vram_base;
     uint64_t vram_end = vram_start + trampoline_params->vram_size - 1;
     uint64_t fb_start = 0xf400000000;
     uint64_t fb_end = fb_start + trampoline_params->vram_size - 1;

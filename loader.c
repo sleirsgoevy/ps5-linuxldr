@@ -8,6 +8,7 @@
 #include <sys/mman.h>
 #include <netinet/in.h>
 #include <ps5/payload.h>
+#include <ps5/kernel.h>
 #include "loader.h"
 #include "utils.h"
 
@@ -110,79 +111,38 @@ ssize_t read_file(const char* filename, void** out, bool allow_netcat)
     return -1;
 }
 
-int sceKernelAllocateDirectMemory(int64_t min_addr, int64_t max_addr, uint64_t len, uint64_t alignment, int memorytype, int64_t* pa);
-int sceKernelMapDirectMemory(void** addr, uint64_t len, int prot, int flags, uint64_t phys_addr, uint64_t alignment);
+//the memory at 0x100000000-0x400000000 is designated as "application memory"
+//unless a game is currently running, this memory is basically guaranteed to be free
 
-static uint64_t allocate_large_physical_memory(void** ptr, size_t sz, uint64_t alignment)
-{
-    if(sz == 0)
-        return 0; //already physically contigous, can give any valid address
-    if(alignment < (1 << 21))
-        alignment = (1 << 21);
-    sz = (sz + alignment - 1) & -alignment;
-    int64_t pa;
-    int err = sceKernelAllocateDirectMemory(0, 0x400000000, sz, alignment, 0, &pa);
-    if(err)
-    {
-        notify("sceKernelAllocateDirectMemory failed: 0x%x", err);
-        payload_exit(1);
-    }
-    *ptr = 0;
-    err = sceKernelMapDirectMemory(ptr, sz, PROT_READ|PROT_WRITE, 0, pa, alignment);
-    if(err)
-    {
-        notify("sceKernelMapDirectMemory failed: 0x%x", err);
-        payload_exit(1);
-    }
-    memset(*ptr, 0, sz);
-    mlock(*ptr, sz);
-    //sony's "physical" addresses are fake, need to get our own from pagetables
-    uint64_t pa_low = -1, pa_high = 0, pagesize;
-    for(uint64_t va = (uint64_t)*ptr; va < (uint64_t)*ptr + sz; va += pagesize)
-    {
-        uint64_t pa = virt2phys(va, &pagesize);
-        pa_low &= pa - va + (uint64_t)*ptr;
-        pa_high |= pa - va + (uint64_t)*ptr;
-    }
-    if(pa_low != pa_high || pa_low == (uint64_t)-1)
-    {
-        notify("memory is not physically contigous");
-        payload_exit(1);
-    }
-    leak_fd(*(int*)((uintptr_t)sceKernelAllocateDirectMemory + 0x68014 - 0x18990));
-    return pa_low;
-}
+static constexpr uint64_t APP_MEMORY_START = 0x100000000;
+static constexpr uint64_t APP_MEMORY_END = 0x400000000;
 
-static uint64_t allocate_small_physical_memory(void** ptr, size_t sz, uint64_t alignment)
+static void map_physical_memory(void)
 {
-    static uint64_t cur_pa;
-    static uint64_t end_pa;
-    static char* cur_va;
-    static constexpr size_t CHUNK_SIZE = 1 << 21;
-    uint64_t next_pa = ((cur_pa + alignment - 1) & -alignment) + sz;
-    if(next_pa > end_pa)
-    {
-        void* p;
-        cur_pa = allocate_large_physical_memory(&p, CHUNK_SIZE, CHUNK_SIZE);
-        end_pa = cur_pa + CHUNK_SIZE;
-        cur_va = p;
-    }
-    uint64_t start = (cur_pa + alignment - 1) & -alignment;
-    uint64_t end = start + sz;
-    char* ans = cur_va + (start - cur_pa);
-    cur_pa = end;
-    cur_va = ans + sz;
-    *ptr = ans;
-    return start;
+    static bool mapped = false;
+    if(mapped)
+        return;
+    uint64_t pml3[512] = {};
+    for(size_t i = 0; i < 512; i++)
+        pml3[i] = (i << 30) | 0x87;
+    kernel_copyin(pml3, get_dmap_base() + APP_MEMORY_START, 4096);
+    kwrite64(get_dmap_base() + get_cr3() + 8, APP_MEMORY_START | 7);
+    mapped = true;
 }
 
 uint64_t allocate_physical_memory(void** ptr, size_t sz, uint64_t alignment)
 {
-    static constexpr size_t THRESHOLD = 65536;
-    if(sz <= THRESHOLD && alignment <= THRESHOLD)
-        return allocate_small_physical_memory(ptr, sz, alignment);
-    else
-        return allocate_large_physical_memory(ptr, sz, alignment);
+    map_physical_memory();
+    static uint64_t cur_phys = APP_MEMORY_START + 4096;
+    uint64_t ans = -(-cur_phys & -alignment);
+    if(ans + sz > APP_MEMORY_END)
+    {
+        notify("Out of physical memory");
+        payload_exit(1);
+    }
+    cur_phys = ans + sz;
+    *ptr = (void*)((1ull << 39) + ans);
+    return ans;
 }
 
 uint64_t to_physical_memory_partial(void** buf, size_t sz, size_t copy_sz, uint64_t alignment, uint64_t misalignment, bool move)
