@@ -96,7 +96,7 @@ static ssize_t receive_file(const char* filename, void** out)
     }
 }
 
-ssize_t read_file(const char* filename, void** out, bool allow_netcat)
+static ssize_t do_read_file(const char* filename, void** out, bool allow_netcat)
 {
     int fd = open_file(filename);
     if(fd >= 0)
@@ -109,6 +109,45 @@ ssize_t read_file(const char* filename, void** out, bool allow_netcat)
     }
     notify("%s not found", filename);
     return -1;
+}
+
+static const char* get_overridden_filename(const char* filename)
+{
+    static char* overrides_start = nullptr;
+    static char* overrides_end = nullptr;
+    if(!overrides_start)
+    {
+        void* p = nullptr;
+        ssize_t sz = do_read_file("path-override.txt", &p, false);
+        if(sz < 0)
+        {
+            overrides_start = malloc(1);
+            overrides_end = overrides_start;
+        }
+        else
+        {
+            overrides_start = realloc(p, sz + 1);
+            overrides_end = overrides_start + sz;
+        }
+        for(char* p = overrides_start; p < overrides_end; p++)
+            if(*p == '\n')
+                *p = 0;
+        *overrides_end++ = 0;
+    }
+    size_t needle_size = strlen(filename);
+    for(char* p = overrides_start; p < overrides_end;)
+    {
+        size_t haystack_size = strlen(p);
+        if(haystack_size > needle_size && !strncmp(p, filename, needle_size) && p[needle_size] == '=')
+            return p + needle_size + 1;
+        p += haystack_size + 1;
+    }
+    return filename;
+}
+
+ssize_t read_file(const char* filename, void** out, bool allow_netcat)
+{
+    return do_read_file(get_overridden_filename(filename), out, allow_netcat);
 }
 
 //the memory at 0x100000000-0x400000000 is designated as "application memory"
