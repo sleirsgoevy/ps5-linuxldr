@@ -44,6 +44,8 @@ static void e820_cutout(struct boot_params* bp, uint64_t start, uint64_t end, in
     e820_add_node(bp, start, end, type);
 }
 
+int sceKernelIsDevKit(void);
+
 void e820_init(struct boot_params* bp)
 {
     //from ps5-linux-loader
@@ -72,8 +74,16 @@ void e820_init(struct boot_params* bp)
     e820_add_node(bp, 0x080000000, 0x0c4400000, TYPE_RESERVED);
     e820_add_node(bp, 0x0d0000000, 0x0e0700000, TYPE_RESERVED);
     e820_add_node(bp, 0x0f0000000, 0x0f8000000, TYPE_RESERVED);
-    e820_add_node(bp, 0x100000000, 0x47f300000, TYPE_FREE);
-    e820_add_node(bp, 0x47f300000, 0x480000000, TYPE_RESERVED);
+    if(sceKernelIsDevKit())
+    {
+        e820_add_node(bp, 0x100000000, 0x87f300000, TYPE_FREE);
+        e820_add_node(bp, 0x87f300000, 0x880000000, TYPE_RESERVED);
+    }
+    else //testkit/retail
+    {
+        e820_add_node(bp, 0x100000000, 0x47f300000, TYPE_FREE);
+        e820_add_node(bp, 0x47f300000, 0x480000000, TYPE_RESERVED);
+    }
 }
 
 void e820_set_reserved(struct boot_params* bp, uint64_t start, uint64_t end)
